@@ -53,7 +53,9 @@ VkDevice device;
 VkQueue graphicsQueue;
 VkQueue presentQueue;
 VkSwapchainKHR swapChain;
-VkImage swapChainImages[64]; // arbitrary count
+VkImage* swapChainImages;
+uint32_t swapChainImageCount;
+VkImageView* swapChainImageViews;
 VkFormat swapChainImageFormat;
 VkExtent2D swapChainExtent;
 
@@ -80,6 +82,7 @@ VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR* availablePresentModes,
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR* capabilities);
 int createLogicalDevice();
 int createSwapChain();
+int createImageViews();
 
 void mainloop();
 void cleanup();
@@ -147,6 +150,10 @@ int initVulkan() {
     if(createSwapChain() != 0) {
         perror("ERROR: failed to create swap chain\n");
         return -1;
+    }
+
+    if(createImageViews() != 0) {
+        perror("ERROR: failed to create image views\n");
     }
 
     return 0;
@@ -597,7 +604,41 @@ int createSwapChain() {
     swapChainExtent = extent;
 
     vkGetSwapchainImagesKHR(device, swapChain, &imageCount, NULL);
+    swapChainImageCount = imageCount;
+    swapChainImages = malloc(sizeof(VkImage) * imageCount);
     vkGetSwapchainImagesKHR(device, swapChain, &imageCount, swapChainImages);
+
+    return 0;
+}
+
+int createImageViews() {
+    // sufficient if we are only drawing one step
+    swapChainImageViews = malloc(sizeof(VkImageView) * swapChainImageCount);
+
+    for(size_t i = 0; i < swapChainImageCount; ++i) {
+        VkImageViewCreateInfo createInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = swapChainImages[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = swapChainImageFormat,
+            .components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+
+        if (vkCreateImageView(device, &createInfo, NULL, &swapChainImageViews[i]) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR: failed to create image view %lu\n", i);
+            return -1;
+        }
+    }
 
     return 0;
 }
@@ -609,6 +650,10 @@ void mainloop() {
 }
 
 void cleanup() {
+    for(size_t i = 0; i < swapChainImageCount; ++i) {
+        vkDestroyImageView(device, swapChainImageViews[i], NULL);
+    }
+
     vkDestroySwapchainKHR(device, swapChain, NULL);
     vkDestroyDevice(device, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);

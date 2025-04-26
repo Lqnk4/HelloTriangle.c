@@ -21,13 +21,13 @@ INC_FLAGS := $(addprefix -I,$(INC_DIRS))
 ASFLAGS := -felf64
 
 CPPFLAGS := $(INC_FLAGS) -MMD -MP
-CCFLAGS := -Wall
+CCFLAGS := -Wall -Werror -Wextra -DNDEBUG
 
 LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi
 
 all: $(EXECUTABLE)
 
-debug: CCFLAGS += -DDEBUG -g
+debug: CCFLAGS += -UNDEBUG -g
 debug: clean $(EXECUTABLE)
 
 $(EXECUTABLE): $(OBJS)

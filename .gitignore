@@ -1,0 +1,5 @@
+.clang-format
+.cache/**
+compile_commands.json
+build/**
+main

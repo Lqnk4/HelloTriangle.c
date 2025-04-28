@@ -40,6 +40,8 @@ typedef struct {
 GLFWwindow* window;
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 800;
+// const int MAX_FRAMES_IN_FLIGHT = 2;
+#define MAX_FRAMES_IN_FLIGHT 2
 
 const char* const validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
 
@@ -62,10 +64,11 @@ VkRenderPass renderPass;
 VkPipelineLayout pipelineLayout;
 VkPipeline graphicsPipeline;
 VkCommandPool commandPool;
-VkCommandBuffer commandBuffer;
-VkSemaphore imageAvailableSemaphore;
-VkSemaphore renderFinishedSemaphore;
-VkFence inFlightFence;
+VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
+VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
+VkSemaphore renderFinishedSemaphores[MAX_FRAMES_IN_FLIGHT];
+VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
+uint32_t currentFrame;
 
 int run();
 
@@ -96,7 +99,7 @@ int createGraphicsPipeline();
 VkShaderModule createShaderModule(const char* code, size_t codeSize);
 int createFrameBuffers();
 int createCommandPool();
-int createCommandBuffer();
+int createCommandBuffers();
 int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 int createSyncObjects();
 
@@ -199,7 +202,7 @@ int initVulkan() {
         return -1;
     }
 
-    if (createCommandBuffer() != 0) {
+    if (createCommandBuffers() != 0) {
         perror("ERROR: failed to create command buffer\n");
         return -1;
     }
@@ -985,16 +988,16 @@ int createCommandPool() {
     return 0;
 }
 
-int createCommandBuffer() {
+int createCommandBuffers() {
 
     VkCommandBufferAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = commandPool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
     };
 
-    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) !=
+    if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
         VK_SUCCESS) {
         return -1;
     }
@@ -1069,14 +1072,18 @@ int createSyncObjects() {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    if (vkCreateSemaphore(device, &semaphoreInfo, NULL,
-                          &imageAvailableSemaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(device, &semaphoreInfo, NULL,
-                          &renderFinishedSemaphore) != VK_SUCCESS ||
-        vkCreateFence(device, &fenceInfo, NULL, &inFlightFence) != VK_SUCCESS) {
-        perror("ERROR: failed to create semaphores\n");
-        return -1;
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (vkCreateSemaphore(device, &semaphoreInfo, NULL,
+                    &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+                vkCreateSemaphore(device, &semaphoreInfo, NULL,
+                    &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+                vkCreateFence(device, &fenceInfo, NULL, &inFlightFences[i]) != VK_SUCCESS) {
+            perror("ERROR: failed to create synchronization objects for a frame\n");
+            return -1;
+        }
+
     }
+
     return 0;
 }
 
@@ -1092,20 +1099,20 @@ int mainloop() {
 }
 
 int drawFrame() {
-    vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &inFlightFence);
+    vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
     uint32_t imageIndex;
 
     vkAcquireNextImageKHR(device, swapChain, UINT64_MAX,
-                          imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+                          imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
-    vkResetCommandBuffer(commandBuffer, 0);
+    vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
-    recordCommandBuffer(commandBuffer, imageIndex);
+    recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
-    VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
-    VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+    VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+    VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
     VkPipelineStageFlags waitStages[] = {
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     VkSubmitInfo submitInfo = {
@@ -1114,12 +1121,12 @@ int drawFrame() {
         .pWaitSemaphores = waitSemaphores,
         .pWaitDstStageMask = waitStages,
         .commandBufferCount = 1,
-        .pCommandBuffers = &commandBuffer,
+        .pCommandBuffers = &commandBuffers[currentFrame],
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = signalSemaphores,
     };
 
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence) !=
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) !=
         VK_SUCCESS) {
         perror("ERROR: failed to submit draw command buffer\n");
         return -1;
@@ -1141,14 +1148,18 @@ int drawFrame() {
         return -1;
     }
 
+    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
     return 0;
 }
 
 void cleanup() {
 
-    vkDestroySemaphore(device, imageAvailableSemaphore, NULL);
-    vkDestroySemaphore(device, renderFinishedSemaphore, NULL);
-    vkDestroyFence(device, inFlightFence, NULL);
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        vkDestroySemaphore(device, imageAvailableSemaphores[i], NULL);
+        vkDestroySemaphore(device, renderFinishedSemaphores[i], NULL);
+        vkDestroyFence(device, inFlightFences[i], NULL);
+    }
 
     vkDestroyCommandPool(device, commandPool, NULL);
 

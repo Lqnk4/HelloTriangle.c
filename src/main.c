@@ -1,4 +1,3 @@
-#include "arrays/arrays.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -56,11 +55,17 @@ VkSwapchainKHR swapChain;
 uint32_t swapChainImageCount;
 VkImage swapChainImages[64]; // excess arbitrary length
 VkImageView swapChainImageViews[64];
+VkFramebuffer swapChainFrameBuffers[64];
 VkFormat swapChainImageFormat;
 VkExtent2D swapChainExtent;
 VkRenderPass renderPass;
 VkPipelineLayout pipelineLayout;
 VkPipeline graphicsPipeline;
+VkCommandPool commandPool;
+VkCommandBuffer commandBuffer;
+VkSemaphore imageAvailableSemaphore;
+VkSemaphore renderFinishedSemaphore;
+VkFence inFlightFence;
 
 int run();
 
@@ -86,15 +91,23 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR* capabilities);
 int createLogicalDevice();
 int createSwapChain();
 int createImageViews();
-
 int createRenderPass();
 int createGraphicsPipeline();
 VkShaderModule createShaderModule(const char* code, size_t codeSize);
+int createFrameBuffers();
+int createCommandPool();
+int createCommandBuffer();
+int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+int createSyncObjects();
 
-void mainloop();
+int mainloop();
+int drawFrame();
+
 void cleanup();
 
 static char* readFile(const char* fileName, size_t* fileSize);
+int compare_uint32_t(const void* a, const void* b);
+uint32_t removeDup(uint32_t arr[], size_t n);
 
 int main() {
 
@@ -173,6 +186,26 @@ int initVulkan() {
 
     if (createGraphicsPipeline() != 0) {
         perror("ERROR: failed to create graphics pipeline\n");
+        return -1;
+    }
+
+    if (createFrameBuffers() != 0) {
+        perror("ERROR: failed to create frame buffers\n");
+        return -1;
+    }
+
+    if (createCommandPool() != 0) {
+        perror("ERROR: failed to create command pool\n");
+        return -1;
+    }
+
+    if (createCommandBuffer() != 0) {
+        perror("ERROR: failed to create command buffer\n");
+        return -1;
+    }
+
+    if (createSyncObjects() != 0) {
+        perror("ERROR: failed to create sync objects\n");
         return -1;
     }
 
@@ -563,6 +596,7 @@ int createLogicalDevice() {
     }
 
     vkGetDeviceQueue(device, indices.graphicsFamily.value, 0, &graphicsQueue);
+    vkGetDeviceQueue(device, indices.presentFamily.value, 0, &presentQueue);
 
     return 0;
 }
@@ -665,7 +699,7 @@ int createImageViews() {
 }
 
 int createRenderPass() {
-    VkAttachmentDescription colorAttachment  ={
+    VkAttachmentDescription colorAttachment = {
         .format = swapChainImageFormat,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -687,15 +721,27 @@ int createRenderPass() {
         .pColorAttachments = &colorAttatchmentRef
     };
 
+    VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
     VkRenderPassCreateInfo renderPassInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 1,
         .pAttachments = &colorAttachment,
         .subpassCount = 1,
         .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency
     };
 
-    if (vkCreateRenderPass(device, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS) {
+    if (vkCreateRenderPass(device, &renderPassInfo, NULL, &renderPass) !=
+        VK_SUCCESS) {
         perror("ERROR: failed to create render pass\n");
         return -1;
     }
@@ -828,10 +874,10 @@ int createGraphicsPipeline() {
         .logicOp = VK_LOGIC_OP_COPY, // Optional
         .attachmentCount = 1,
         .pAttachments = &colorBlendAttachment,
-        .blendConstants[0] = 0.0f,   // Optional
-        .blendConstants[1] = 0.0f,   // Optional
-        .blendConstants[2] = 0.0f,   // Optional
-        .blendConstants[3] = 0.0f,   // Optional
+        .blendConstants[0] = 0.0f, // Optional
+        .blendConstants[1] = 0.0f, // Optional
+        .blendConstants[2] = 0.0f, // Optional
+        .blendConstants[3] = 0.0f, // Optional
     };
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
@@ -842,7 +888,8 @@ int createGraphicsPipeline() {
         .pPushConstantRanges = NULL,
     };
 
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipelineLayout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL,
+                               &pipelineLayout) != VK_SUCCESS) {
         perror("ERROR: failed to create pipeline layout\n");
         return -1;
     }
@@ -866,7 +913,8 @@ int createGraphicsPipeline() {
         .basePipelineIndex = -1,
     };
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
+                                  NULL, &graphicsPipeline) != VK_SUCCESS) {
         perror("ERROR: failed to create graphics pipeline\n");
         return -1;
     }
@@ -894,13 +942,220 @@ VkShaderModule createShaderModule(const char* code, size_t codeSize) {
     return shaderModule;
 }
 
-void mainloop() {
+int createFrameBuffers() {
+    for (size_t i = 0; i < swapChainImageCount; ++i) {
+        VkImageView attachments[] = {swapChainImageViews[i]};
+
+        VkFramebufferCreateInfo framebufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = renderPass,
+            .attachmentCount = 1,
+            .pAttachments = attachments,
+            .width = swapChainExtent.width,
+            .height = swapChainExtent.height,
+            .layers = 1,
+        };
+
+        if (vkCreateFramebuffer(device, &framebufferInfo, NULL,
+                                &swapChainFrameBuffers[i]) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR: failed to create framebuffer %lu\n", i);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int createCommandPool() {
+    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+    assert(queueFamilyIndices.graphicsFamily.is_present);
+
+    VkCommandPoolCreateInfo poolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queueFamilyIndices.graphicsFamily.value,
+    };
+
+    if (vkCreateCommandPool(device, &poolInfo, NULL, &commandPool) !=
+        VK_SUCCESS) {
+        perror("ERROR: failed to create command pool\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int createCommandBuffer() {
+
+    VkCommandBufferAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) !=
+        VK_SUCCESS) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = 0,
+        .pInheritanceInfo = NULL,
+    };
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        perror("ERROR: failed to begin recording command buffer\n");
+        return -1;
+    }
+
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    VkRenderPassBeginInfo renderPassInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = renderPass,
+        .framebuffer = swapChainFrameBuffers[imageIndex],
+        .renderArea.offset = {0, 0},
+        .renderArea.extent = swapChainExtent,
+        .clearValueCount = 1,
+        .pClearValues = &clearColor,
+    };
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo,
+                         VK_SUBPASS_CONTENTS_INLINE);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      graphicsPipeline);
+
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float)(swapChainExtent.width),
+        .height = (float)(swapChainExtent.height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = swapChainExtent,
+    };
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(commandBuffer);
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        perror("ERROR: failed to record command buffer\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int createSyncObjects() {
+    VkSemaphoreCreateInfo semaphoreInfo = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    VkFenceCreateInfo fenceInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+
+    if (vkCreateSemaphore(device, &semaphoreInfo, NULL,
+                          &imageAvailableSemaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(device, &semaphoreInfo, NULL,
+                          &renderFinishedSemaphore) != VK_SUCCESS ||
+        vkCreateFence(device, &fenceInfo, NULL, &inFlightFence) != VK_SUCCESS) {
+        perror("ERROR: failed to create semaphores\n");
+        return -1;
+    }
+    return 0;
+}
+
+int mainloop() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        drawFrame();
     }
+
+    vkDeviceWaitIdle(device);
+
+    return 0;
+}
+
+int drawFrame() {
+    vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &inFlightFence);
+
+    uint32_t imageIndex;
+
+    vkAcquireNextImageKHR(device, swapChain, UINT64_MAX,
+                          imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    vkResetCommandBuffer(commandBuffer, 0);
+
+    recordCommandBuffer(commandBuffer, imageIndex);
+
+    VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
+    VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+    VkPipelineStageFlags waitStages[] = {
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = waitSemaphores,
+        .pWaitDstStageMask = waitStages,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandBuffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = signalSemaphores,
+    };
+
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence) !=
+        VK_SUCCESS) {
+        perror("ERROR: failed to submit draw command buffer\n");
+        return -1;
+    }
+
+    VkSwapchainKHR swapchains[] = {swapChain};
+    VkPresentInfoKHR presentInfo = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = signalSemaphores,
+        .swapchainCount = 1,
+        .pSwapchains = swapchains,
+        .pImageIndices = &imageIndex,
+        .pResults = NULL,
+    };
+
+    if (vkQueuePresentKHR(presentQueue, &presentInfo) != VK_SUCCESS) {
+        perror("ERROR: failed to draw frame\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 void cleanup() {
+
+    vkDestroySemaphore(device, imageAvailableSemaphore, NULL);
+    vkDestroySemaphore(device, renderFinishedSemaphore, NULL);
+    vkDestroyFence(device, inFlightFence, NULL);
+
+    vkDestroyCommandPool(device, commandPool, NULL);
+
+    for (size_t i = 0; i < swapChainImageCount; ++i) {
+        vkDestroyFramebuffer(device, swapChainFrameBuffers[i], NULL);
+    }
+
     vkDestroyPipeline(device, graphicsPipeline, NULL);
     vkDestroyPipelineLayout(device, pipelineLayout, NULL);
     vkDestroyRenderPass(device, renderPass, NULL);
@@ -953,4 +1208,26 @@ static char* readFile(const char* fileName, size_t* fileSize) {
     *fileSize = size;
 
     return dict;
+}
+
+int compare_uint32_t(const void* a, const void* b) {
+    return (*(uint32_t*)a - *(uint32_t*)b);
+}
+
+uint32_t removeDup(uint32_t arr[], size_t n) {
+    if (n == 0)
+        return 0;
+
+    int j = 0;
+    for (size_t i = 1; i < n - 1; i++) {
+
+        // If a unique element is found, place
+        // it at arr[j + 1]
+        if (arr[i] != arr[j])
+            arr[++j] = arr[i];
+    }
+
+    // Return the new ending of arr that only
+    // contains unique elements
+    return j + 1;
 }

@@ -37,11 +37,13 @@ typedef struct {
     size_t presentModeCount;
 } SwapChainSupportDetails;
 
+#define SWAPCHAIN_LENGTH 64
+#define MAX_FRAMES_IN_FLIGHT 2
+
 GLFWwindow* window;
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 800;
 // const int MAX_FRAMES_IN_FLIGHT = 2;
-#define MAX_FRAMES_IN_FLIGHT 2
 
 const char* const validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
 
@@ -55,9 +57,9 @@ VkQueue graphicsQueue;
 VkQueue presentQueue;
 VkSwapchainKHR swapChain;
 uint32_t swapChainImageCount;
-VkImage swapChainImages[64]; // excess arbitrary length
-VkImageView swapChainImageViews[64];
-VkFramebuffer swapChainFrameBuffers[64];
+VkImage swapChainImages[SWAPCHAIN_LENGTH]; // excess arbitrary length
+VkImageView swapChainImageViews[SWAPCHAIN_LENGTH];
+VkFramebuffer swapChainFrameBuffers[SWAPCHAIN_LENGTH];
 VkFormat swapChainImageFormat;
 VkExtent2D swapChainExtent;
 VkRenderPass renderPass;
@@ -921,6 +923,9 @@ int createGraphicsPipeline() {
         perror("ERROR: failed to create graphics pipeline\n");
         return -1;
     }
+
+    free(vertShaderCode);
+    free(fragShaderCode);
 
     vkDestroyShaderModule(device, vertShaderModule, NULL);
     vkDestroyShaderModule(device, fragShaderModule, NULL);

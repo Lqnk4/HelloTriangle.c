@@ -49,6 +49,8 @@ clean:
 	rm -r $(BUILD_DIR)
 	rm $(EXECUTABLE)
 
+# Generates compile_commands.json for clangd lsp server
+# Requires package `compiledb`, run whenever editing compiler flags
 compile_commands:
 	make clean
 	compiledb make

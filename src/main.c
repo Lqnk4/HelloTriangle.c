@@ -1,11 +1,13 @@
+#include "cglm/types.h"
+#include <vulkan/vulkan_core.h>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 #include <assert.h>
+#include <cglm/cglm.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <vulkan/vulkan_core.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -37,6 +39,40 @@ typedef struct {
     size_t presentModeCount;
 } SwapChainSupportDetails;
 
+struct Vertex {
+    vec2 pos;
+    vec3 color;
+};
+
+static VkVertexInputBindingDescription getBindingDescription() {
+    VkVertexInputBindingDescription bindingDescription = {
+        .binding = 0,
+        .stride = sizeof(struct Vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    return bindingDescription;
+}
+
+static VkVertexInputAttributeDescription getPositionAttributeDescription() {
+    VkVertexInputAttributeDescription positionAttributeDescription = {
+        .binding = 0,
+        .location = 0,
+        .format = VK_FORMAT_R32G32_SFLOAT,
+        .offset = offsetof(struct Vertex, pos),
+    };
+    return positionAttributeDescription;
+}
+
+static VkVertexInputAttributeDescription getColorAttributeDescription() {
+    VkVertexInputAttributeDescription colorAttributeDescription = {
+        .binding = 0,
+        .location = 1,
+        .format = VK_FORMAT_R32G32B32_SFLOAT,
+        .offset = offsetof(struct Vertex, color),
+    };
+    return colorAttributeDescription;
+}
+
 #define SWAPCHAIN_LENGTH 64
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -48,6 +84,10 @@ const uint32_t HEIGHT = 800;
 const char* const validationLayers[] = {"VK_LAYER_KHRONOS_validation"};
 
 const char* const deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+const struct Vertex vertices[3] = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+                                   {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+                                   {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
 
 VkInstance instance;
 VkSurfaceKHR surface;
@@ -66,6 +106,8 @@ VkRenderPass renderPass;
 VkPipelineLayout pipelineLayout;
 VkPipeline graphicsPipeline;
 VkCommandPool commandPool;
+VkBuffer vertexBuffer;
+VkDeviceMemory vertexBufferMemory;
 VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
 VkSemaphore renderFinishedSemaphores[MAX_FRAMES_IN_FLIGHT];
@@ -74,11 +116,9 @@ uint32_t currentFrame;
 bool framebufferResized;
 
 int run();
-
 int initWindow();
 static void framebufferResizeCallback(GLFWwindow* window, int width,
                                       int height);
-
 int initVulkan();
 int createInstance();
 int createSurface();
@@ -96,6 +136,7 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR* availableFormats,
 VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR* availablePresentModes,
                                        size_t presentModeCount);
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR* capabilities);
+uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 int createLogicalDevice();
 int createSwapChain();
 int recreateSwapChain();
@@ -105,15 +146,13 @@ int createGraphicsPipeline();
 VkShaderModule createShaderModule(const char* code, size_t codeSize);
 int createFrameBuffers();
 int createCommandPool();
+int createVertexBuffer();
 int createCommandBuffers();
 int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 int createSyncObjects();
-
 int mainloop();
 int drawFrame();
-
 void cleanup();
-
 static char* readFile(const char* fileName, size_t* fileSize);
 int compare_uint32_t(const void* a, const void* b);
 uint32_t removeDup(uint32_t arr[], size_t n);
@@ -129,9 +168,12 @@ int main() {
 }
 
 int run() {
-    if (initWindow() != 0)
-        return -1;
-    initVulkan();
+    if (initWindow() != 0) {
+        exit(1);
+    }
+    if (initVulkan() != 0) {
+        exit(1);
+    };
     mainloop();
     cleanup();
     return 0;
@@ -139,7 +181,7 @@ int run() {
 
 int initWindow() {
     if (glfwInit() == GLFW_FALSE) {
-        perror("WARNING: Failed to initialize libglfw\n");
+        fprintf(stderr, "WARNING: Failed to initialize libglfw\n");
         return -1;
     }
 
@@ -162,67 +204,73 @@ static void framebufferResizeCallback(__attribute__((unused))
 int initVulkan() {
 
     if (enableValidationLayers && !checkValidationLayerSupport()) {
-        perror("ERROR: validation layers requested, but not available!\n");
+        fprintf(stderr,
+                "ERROR: validation layers requested, but not available!\n");
         return -1;
     }
 
     if (createInstance() != 0) {
-        perror("ERROR: failed to create vulkan instance\n");
+        fprintf(stderr, "ERROR: failed to create vulkan instance\n");
         return -1;
     }
 
     if (createSurface() != 0) {
-        perror("ERROR: failed to create vulkan surface\n");
+        fprintf(stderr, "ERROR: failed to create vulkan surface\n");
         return -1;
     }
 
     if (pickPhysicalDevice() != 0) {
-        perror("ERROR: failed to pick physical device\n");
+        fprintf(stderr, "ERROR: failed to pick physical device\n");
         return -1;
     }
 
     if (createLogicalDevice() != 0) {
-        perror("ERROR: failed to create logical device\n");
+        fprintf(stderr, "ERROR: failed to create logical device\n");
         return -1;
     }
 
     if (createSwapChain() != 0) {
-        perror("ERROR: failed to create swap chain\n");
+        fprintf(stderr, "ERROR: failed to create swap chain\n");
         return -1;
     }
 
     if (createImageViews() != 0) {
-        perror("ERROR: failed to create image views\n");
+        fprintf(stderr, "ERROR: failed to create image views\n");
         return -1;
     }
 
     if (createRenderPass() != 0) {
-        perror("ERROR: failed to create render pass\n");
+        fprintf(stderr, "ERROR: failed to create render pass\n");
         return -1;
     }
 
     if (createGraphicsPipeline() != 0) {
-        perror("ERROR: failed to create graphics pipeline\n");
+        fprintf(stderr, "ERROR: failed to create graphics pipeline\n");
         return -1;
     }
 
     if (createFrameBuffers() != 0) {
-        perror("ERROR: failed to create frame buffers\n");
+        fprintf(stderr, "ERROR: failed to create frame buffers\n");
         return -1;
     }
 
     if (createCommandPool() != 0) {
-        perror("ERROR: failed to create command pool\n");
+        fprintf(stderr, "ERROR: failed to create command pool\n");
+        return -1;
+    }
+
+    if (createVertexBuffer() != 0) {
+        fprintf(stderr, "ERROR: failed to create vertex buffers\n");
         return -1;
     }
 
     if (createCommandBuffers() != 0) {
-        perror("ERROR: failed to create command buffer\n");
+        fprintf(stderr, "ERROR: failed to create command buffer\n");
         return -1;
     }
 
     if (createSyncObjects() != 0) {
-        perror("ERROR: failed to create sync objects\n");
+        fprintf(stderr, "ERROR: failed to create sync objects\n");
         return -1;
     }
 
@@ -261,12 +309,12 @@ int createInstance() {
     }
 
     if (vkCreateInstance(&createInfo, NULL, &instance) != VK_SUCCESS) {
-        perror("ERROR: Failed to create vulkan instance\n");
+        fprintf(stderr, "ERROR: Failed to create vulkan instance\n");
         return -1;
     }
 
     if (!checkRequiredGLFWExtensions(glfwExtensionCount, glfwExtensions)) {
-        perror("ERROR: Failed to find required extensions\n");
+        fprintf(stderr, "ERROR: Failed to find required extensions\n");
         return -1;
     }
 
@@ -276,7 +324,7 @@ int createInstance() {
 int createSurface() {
     if (glfwCreateWindowSurface(instance, window, NULL, &surface) !=
         VK_SUCCESS) {
-        perror("ERROR: Failed to create window surface\n");
+        fprintf(stderr, "ERROR: Failed to create window surface\n");
         return -1;
     }
 
@@ -330,7 +378,8 @@ bool checkValidationLayerSupport() {
     VkLayerProperties availableLayers[layerCount];
     if (!(vkEnumerateInstanceLayerProperties(&layerCount, availableLayers) ==
           VK_SUCCESS)) {
-        perror("ERROR: Failed to enumerate instance layer properties\n");
+        fprintf(stderr,
+                "ERROR: Failed to enumerate instance layer properties\n");
         return false;
     }
 
@@ -357,7 +406,7 @@ int pickPhysicalDevice() {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
     if (deviceCount == 0) {
-        perror("ERROR: Found 0 physical devices\n");
+        fprintf(stderr, "ERROR: Found 0 physical devices\n");
         return -1;
     }
     VkPhysicalDevice devices[deviceCount];
@@ -374,14 +423,14 @@ int pickPhysicalDevice() {
     }
 
     if (bestDeviceRating <= 0) {
-        perror("ERROR: Failed to find a suitable device\n");
+        fprintf(stderr, "ERROR: Failed to find a suitable device\n");
         return -1;
     }
 
     physicalDevice = bestDevice;
 
     if (physicalDevice == VK_NULL_HANDLE) {
-        perror("ERROR: Failed to find a suitable device\n");
+        fprintf(stderr, "ERROR: Failed to find a suitable device\n");
         return -1;
     }
 
@@ -481,8 +530,6 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
         if (isComplete(indices)) {
             break;
         }
-
-        i++;
     }
 
     return indices;
@@ -608,7 +655,7 @@ int createLogicalDevice() {
 
     if (vkCreateDevice(physicalDevice, &createInfo, NULL, &device) !=
         VK_SUCCESS) {
-        perror("ERROR: failed to create logical device\n");
+        fprintf(stderr, "ERROR: failed to create logical device\n");
         return -1;
     }
 
@@ -669,7 +716,7 @@ int createSwapChain() {
 
     if (vkCreateSwapchainKHR(device, &createInfo, NULL, &swapChain) !=
         VK_SUCCESS) {
-        perror("ERROR: failed to create swapchain\n");
+        fprintf(stderr, "ERROR: failed to create swapchain\n");
         return -1;
     }
 
@@ -780,7 +827,7 @@ int createRenderPass() {
 
     if (vkCreateRenderPass(device, &renderPassInfo, NULL, &renderPass) !=
         VK_SUCCESS) {
-        perror("ERROR: failed to create render pass\n");
+        fprintf(stderr, "ERROR: failed to create render pass\n");
         return -1;
     }
 
@@ -836,12 +883,18 @@ int createGraphicsPipeline() {
         .pDynamicStates = dynamicStates,
     };
 
+    VkVertexInputBindingDescription bindingDescriptions[1] = {
+        getBindingDescription()};
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {
+        getPositionAttributeDescription(), getColorAttributeDescription()};
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 0,
-        .pVertexBindingDescriptions = NULL,
-        .vertexAttributeDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL,
+        .pVertexBindingDescriptions = bindingDescriptions,
+        .vertexBindingDescriptionCount =
+            sizeof(bindingDescriptions) / sizeof(bindingDescriptions[0]),
+        .pVertexAttributeDescriptions = attributeDescriptions,
+        .vertexAttributeDescriptionCount =
+            sizeof(attributeDescriptions) / sizeof(attributeDescriptions[0]),
     };
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly = {
@@ -928,7 +981,7 @@ int createGraphicsPipeline() {
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL,
                                &pipelineLayout) != VK_SUCCESS) {
-        perror("ERROR: failed to create pipeline layout\n");
+        fprintf(stderr, "ERROR: failed to create pipeline layout\n");
         return -1;
     }
 
@@ -953,7 +1006,7 @@ int createGraphicsPipeline() {
 
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
                                   NULL, &graphicsPipeline) != VK_SUCCESS) {
-        perror("ERROR: failed to create graphics pipeline\n");
+        fprintf(stderr, "ERROR: failed to create graphics pipeline\n");
         return -1;
     }
 
@@ -976,7 +1029,7 @@ VkShaderModule createShaderModule(const char* code, size_t codeSize) {
     VkShaderModule shaderModule;
     if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) !=
         VK_SUCCESS) {
-        perror("ERROR: failed to create shader module\n");
+        fprintf(stderr, "ERROR: failed to create shader module\n");
         return NULL;
     }
 
@@ -1019,11 +1072,66 @@ int createCommandPool() {
 
     if (vkCreateCommandPool(device, &poolInfo, NULL, &commandPool) !=
         VK_SUCCESS) {
-        perror("ERROR: failed to create command pool\n");
+        fprintf(stderr, "ERROR: failed to create command pool\n");
         return -1;
     }
 
     return 0;
+}
+
+int createVertexBuffer() {
+    VkBufferCreateInfo bufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = sizeof(vertices),
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(device, &bufferInfo, NULL, &vertexBuffer) !=
+        VK_SUCCESS) {
+        fprintf(stderr, "ERROR: Failed to create vertex buffer");
+        return -1;
+    }
+
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(device, vertexBuffer, &memoryRequirements);
+    VkMemoryAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memoryRequirements.size,
+        .memoryTypeIndex =
+            findMemoryType(memoryRequirements.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    if (vkAllocateMemory(device, &allocInfo, NULL, &vertexBufferMemory) !=
+        VK_SUCCESS) {
+        fprintf(stderr, "ERROR: failed to allcate vertexBufferMemory\n");
+        return -1;
+    }
+
+    vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+    void* data;
+    vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+    memcpy(data, vertices, (size_t)bufferInfo.size);
+    vkUnmapMemory(device, vertexBufferMemory);
+
+    return 0;
+}
+
+uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+        if ((typeFilter & (1 << i)) &&
+            (memoryProperties.memoryTypes[i].propertyFlags & properties) ==
+                properties) {
+            return i;
+        }
+    }
+
+    fprintf(stderr, "ERROR: Unable to find suitable memory type\n");
+    exit(1);
 }
 
 int createCommandBuffers() {
@@ -1052,7 +1160,7 @@ int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     };
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        perror("ERROR: failed to begin recording command buffer\n");
+        fprintf(stderr, "ERROR: failed to begin recording command buffer\n");
         return -1;
     }
 
@@ -1073,6 +1181,11 @@ int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       graphicsPipeline);
 
+    VkBuffer vertexBuffers[] = {vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+    size_t numVertices = (sizeof(vertices) / sizeof(vertices[0]));
+
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
@@ -1089,11 +1202,11 @@ int recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     };
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    vkCmdDraw(commandBuffer, numVertices, 1, 0, 0);
 
     vkCmdEndRenderPass(commandBuffer);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-        perror("ERROR: failed to record command buffer\n");
+        fprintf(stderr, "ERROR: failed to record command buffer\n");
         return -1;
     }
 
@@ -1117,8 +1230,9 @@ int createSyncObjects() {
                               &renderFinishedSemaphores[i]) != VK_SUCCESS ||
             vkCreateFence(device, &fenceInfo, NULL, &inFlightFences[i]) !=
                 VK_SUCCESS) {
-            perror("ERROR: failed to create synchronization objects for a "
-                   "frame\n");
+            fprintf(stderr,
+                    "ERROR: failed to create synchronization objects for a "
+                    "frame\n");
             return -1;
         }
     }
@@ -1150,7 +1264,7 @@ int drawFrame() {
         recreateSwapChain();
         return 0;
     } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-        perror("ERROR: Failed to acquire swapchain image\n");
+        fprintf(stderr, "ERROR: Failed to acquire swapchain image\n");
         return -1;
     }
     vkResetFences(device, 1, &inFlightFences[currentFrame]);
@@ -1176,7 +1290,7 @@ int drawFrame() {
 
     if (vkQueueSubmit(graphicsQueue, 1, &submitInfo,
                       inFlightFences[currentFrame]) != VK_SUCCESS) {
-        perror("ERROR: failed to submit draw command buffer\n");
+        fprintf(stderr, "ERROR: failed to submit draw command buffer\n");
         return -1;
     }
 
@@ -1192,12 +1306,12 @@ int drawFrame() {
     };
 
     result = vkQueuePresentKHR(presentQueue, &presentInfo);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || VK_SUBOPTIMAL_KHR ||
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
         framebufferResized) {
         framebufferResized = false;
         recreateSwapChain();
     } else if (result != VK_SUCCESS) {
-        perror("ERROR: failed to present swapchain image\n");
+        fprintf(stderr, "ERROR: failed to present swapchain image\n");
         return -1;
     }
 
@@ -1208,6 +1322,9 @@ int drawFrame() {
 
 void cleanup() {
     cleanupSwapChain();
+
+    vkDestroyBuffer(device, vertexBuffer, NULL);
+    vkFreeMemory(device, vertexBufferMemory, NULL);
 
     vkDestroyPipeline(device, graphicsPipeline, NULL);
     vkDestroyPipelineLayout(device, pipelineLayout, NULL);

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
-/usr/bin/glslc shader.vert -o vert.spv
-/usr/bin/glslc shader.frag -o frag.spv
+/usr/bin/glslc src/shaders/shader.vert -o src/shaders/vert.spv
+/usr/bin/glslc src/shaders/shader.frag -o src/shaders/frag.spv
